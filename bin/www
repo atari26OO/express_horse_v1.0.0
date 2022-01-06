@@ -1,0 +1,260 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+
+var app = require('../app');
+var debug = require('debug')('express-horse:server');
+var http = require('http');
+
+/**
+ * Get port from environment and store in Express.
+ */
+
+var port = normalizePort(process.env.PORT || '3000');
+app.set('port', port);
+
+/**
+ * Create HTTP server.
+ */
+
+var server = http.createServer(app);
+
+/**
+ * Listen on provided port, on all network interfaces.
+ */
+
+server.listen(port);
+server.on('error', onError);
+server.on('listening', onListening);
+
+/**
+ * Normalize a port into a number, string, or false.
+ */
+
+function normalizePort(val) {
+  var port = parseInt(val, 10);
+
+  if (isNaN(port)) {
+    // named pipe
+    return val;
+  }
+
+  if (port >= 0) {
+    // port number
+    return port;
+  }
+
+  return false;
+}
+
+/**
+ * Event listener for HTTP server "error" event.
+ */
+
+function onError(error) {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  var bind = typeof port === 'string'
+    ? 'Pipe ' + port
+    : 'Port ' + port;
+
+  // handle specific listen errors with friendly messages
+  switch (error.code) {
+    case 'EACCES':
+      console.error(bind + ' requires elevated privileges');
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      console.error(bind + ' is already in use');
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+/**
+ * Event listener for HTTP server "listening" event.
+ */
+
+function onListening() {
+  var addr = server.address();
+  var bind = typeof addr === 'string'
+    ? 'pipe ' + addr
+    : 'port ' + addr.port;
+  debug('Listening on ' + bind);
+}
+
+// socket code
+
+
+var io = require('socket.io')(server, { cors: { origin: "*" }});
+
+// close all existing sockets ? ***
+
+// client sockets array
+var sockets_array = [];
+
+// init
+var msg;
+
+io.on('connection', function(socket) {
+  console.log('socket connected:    ' + socket.id);
+
+  // event add_user
+  socket.on('add_user', function(username) {
+
+    // add socket to a simple js data structure array
+    // each element in the sockets array is a JSON string
+    var socket_JSON = '{"id":"' + socket.id + '","username":"' + username + '"}'
+    sockets_array.push(socket_JSON);
+
+    // validate
+    username = username.trim();
+    var pattern_banned = /riel/gi
+    if (username.match(pattern_banned)) {
+      // pattern_banned
+      // message and disconnect
+      msg = 'server > `' + username + '` is banned.';
+      socket.emit('from_server',  msg);
+      io.to(socket.id).emit('socket_disconnect');
+
+    } else if (username == '') {
+      // empty username
+      // message and disconnect
+      msg = 'server > username is empty.';
+      socket.emit('from_server',  msg);
+      io.to(socket.id).emit('socket_disconnect');
+
+    } else {
+      // check if unique
+      var unique_username = true;
+      // loop through sockets array except for last
+      for (var i=0; i<sockets_array.length-1; i++) {
+        var element_username = JSON.parse(sockets_array[i]).username;
+        if (username == element_username) {
+          // duplicate
+          console.log('server:              username `' + username + '` is not unique');
+          unique_username = false;
+          i = sockets_array.length; // to end for loop
+        }
+      }
+      if (unique_username == false) {
+        // not unique
+        // message and disconnect
+        msg = 'server > username `' + username + '` is not unique.';
+        socket.emit('from_server',  msg);
+        io.to(socket.id).emit('socket_disconnect');
+      } else {
+        // notify clients when another connects
+        msg = username + ' > ' + ' connected';
+        socket.broadcast.emit('another_client', msg);
+      }
+    }
+
+  });
+
+  // event message
+  socket.on('message', function(message) {
+    console.log('socket message:      ' + socket.id + ': ' + message);
+
+    // check if command vs messages
+    // commands will start with a dash
+    var pattern_command = /^(\-[a-zA-Z]+)(\s*)(.*)$/g
+    if (message.match(pattern_command)) {
+      // command... perhaps
+      var command_method = message;
+      command_method = command_method.replace(pattern_command, '$1');
+      var command_arg = message;
+      command_arg = command_arg.replace(pattern_command, '$3');
+      console.log('command:             ' + command_method + ' ' + command_arg);
+      if (user_is_admin(get_username_from_socketid(socket.id))) {
+        switch(command_method) {
+          case '-kick':
+            // kick out user in command_arg
+            msg = get_username_from_socketid(socket.id) + ' > ' + message;
+            socket.broadcast.emit('from_admin',  msg);
+            io.to(get_socketid_from_username(command_arg)).emit('socket_disconnect');
+            break;
+          default:
+            // command method not recognized
+            // send message only to oneself
+            msg = 'server > `' + command_method + '` is not recognized.';
+            socket.emit('from_server', msg);
+        }
+      } else { // not admin
+        // send message only to oneself
+        msg = 'server > `' + command_method + '` is not allowed.';
+        socket.emit('from_server', msg);
+      }
+    } else {
+      // message
+      msg = get_username_from_socketid(socket.id) + ': ' + message;
+      socket.broadcast.emit('message',  msg);
+    }
+  });
+
+  // event disconnect
+  socket.on('disconnect', function(reason) {
+    console.log('socket disconnected: ' + socket.id + ' ---> ' + reason);
+    // notify clients when another disconnects
+    msg = get_username_from_socketid(socket.id) + ' > ' + ' disconnected';
+    socket.broadcast.emit('another_client', msg);
+    // delete socket from sockets array
+    for (var i=0; i<sockets_array.length; i++) {
+      //console.log(i + ' > ' + sockets_array[i]);
+      var element_id = JSON.parse(sockets_array[i]).id;
+      if (socket.id == element_id) {
+        sockets_array.splice(i, 1);
+        i = sockets_array.length; // to end for loop
+      }
+    }
+  });
+
+  // user_is_admin
+
+  var user_is_admin = function(username) {
+    var admin = false;
+    if (username == 'Thane' || username == 'thane') {
+      admin = true;
+    }
+    return admin;
+  }
+
+  // get_username_from_socketid
+  var get_username_from_socketid = function(socket_id) {
+    var username;
+    for (var i=0; i<sockets_array.length; i++) {
+      var element_id = JSON.parse(sockets_array[i]).id;
+      if (socket_id == element_id) {
+        // match
+        // get username
+        var element_username = JSON.parse(sockets_array[i]).username;
+        username = element_username;
+        i = sockets_array.length; // to end for loop
+      }
+    }
+    return username;
+  }
+
+  // get_socketid_from_username
+  var get_socketid_from_username = function(username) {
+    var socket_id;
+    for (var i=0; i<sockets_array.length; i++) {
+      var element_username = JSON.parse(sockets_array[i]).username;
+      if (username == element_username) {
+        // match
+        // get username
+        var element_id = JSON.parse(sockets_array[i]).id;
+        socket_id = element_id;
+        i = sockets_array.length; // to end for loop
+      }
+    }
+    return socket_id;
+  }
+
+});
