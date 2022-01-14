@@ -115,7 +115,7 @@ io.on('connection', function(socket) {
 
     // validate
     username = username.trim();
-    var pattern_banned = /riel/gi
+    var pattern_banned = /qwerty/gi
     if (username.match(pattern_banned)) {
       // pattern_banned
       // message and disconnect
